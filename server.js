@@ -283,36 +283,31 @@ io.on("connection", socket => {
         try {
           const url = page.url();
 
-          // Login = left /login page
-          // More reliable detection: check if NOT on login page AND page has loaded
-          const isLoginPage = url.includes("/login") || url.includes("qrcode");
+          // --- NEW STRATEGY: COOKIE MONITORING ---
+          const cookies = await ctx.cookies();
+          const sessionCookie = cookies.find(c => c.name === 'sessionid' || c.name === 'sid_guard');
           
-          // Enhanced detection: look for elements that only appear after login
-          const loggedInSelectors = ['[data-e2e="nav-profile"]', '[data-e2e="nav-upload"]', 'a[href*="/@"]'];
-          let hasLoggedInElement = false;
-          for (const sel of loggedInSelectors) {
-            if (await page.$(sel).catch(() => null)) {
-              hasLoggedInElement = true;
-              break;
-            }
-          }
+          // Fallback to URL/Element check if cookies not ready
+          const isLoginPage = url.includes("/login") || url.includes("qrcode");
+          const hasLoggedInElement = await page.$('[data-e2e="nav-profile"], [data-e2e="nav-upload"]').catch(() => null);
 
-          if ((!isLoginPage || hasLoggedInElement) && !loginDetected) {
-            console.log(`[login-detected] token:${token.slice(0,8)} url:${url} element:${hasLoggedInElement}`);
-            // Double-check: wait a bit and verify we're really logged in
-            await page.waitForTimeout(1500);
-            const newUrl = page.url();
-            const stillNotLogin = !newUrl.includes("/login") && !newUrl.includes("qrcode");
+          if ((sessionCookie || !isLoginPage || hasLoggedInElement) && !loginDetected) {
+            console.log(`[login-detected] token:${token.slice(0,8)} cookie:${!!sessionCookie} url:${url} element:${!!hasLoggedInElement}`);
             
-            if (stillNotLogin || hasLoggedInElement) {
-              loginDetected = true;
-              clearInterval(qrInterval);
-              clearTimeout(qrTimeout);
-              if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
-              emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
-              await startRemoving(token, page);
-              return;
-            }
+            loginDetected = true;
+            clearInterval(qrInterval);
+            clearTimeout(qrTimeout);
+            if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
+            
+            emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
+            
+            // Force navigate to a safe page to break any "stuck" state
+            try {
+              await page.goto("https://www.tiktok.com/foryou", { waitUntil: "domcontentloaded", timeout: 10000 }).catch(() => {});
+            } catch(_) {}
+            
+            await startRemoving(token, page);
+            return;
           }
 
           if (await hasCaptcha(page)) {
@@ -369,32 +364,32 @@ async function getQRRegion(page) {
 // GET PROFILE URL
 // ══════════════════════════════════════════════════════════════════
 async function getProfileUrl(page) {
-  try {
-    const links = await page.$$('a[href*="/@"]');
-    for (const l of links) {
-      const href = await l.getAttribute("href");
-      if (href) {
-        const m = href.match(/\/@([^/?#]+)/);
-        if (m && m[1] !== "tiktok") return `https://www.tiktok.com/@${m[1]}`;
-      }
-    }
-  } catch (_) {}
-
+  // 1. Try from URL
   const m = page.url().match(/\/@([^/?#]+)/);
-  if (m) return `https://www.tiktok.com/@${m[1]}`;
+  if (m && m[1] !== "tiktok") return `https://www.tiktok.com/@${m[1]}`;
 
+  // 2. Try from elements
+  const profileSelectors = ['[data-e2e="nav-profile"]', 'header a[href*="/@"]', 'a[href*="/@"]'];
+  for (const sel of profileSelectors) {
+    try {
+      const el = await page.$(sel);
+      if (el) {
+        const href = await el.getAttribute("href");
+        const mx = href && href.match(/\/@([^/?#]+)/);
+        if (mx && mx[1] !== "tiktok") return `https://www.tiktok.com/@${mx[1]}`;
+      }
+    } catch (_) {}
+  }
+
+  // 3. Try to go home and find it
   try {
-    await page.goto("https://www.tiktok.com/", { waitUntil: "domcontentloaded", timeout: 15000 });
-    await page.waitForTimeout(2500);
-    for (const sel of ['[data-e2e="nav-profile"]', 'header a[href*="/@"]']) {
-      try {
-        const el = await page.$(sel);
-        if (el) {
-          const href = await el.getAttribute("href");
-          const mx = href && href.match(/\/@([^/?#]+)/);
-          if (mx) return `https://www.tiktok.com/@${mx[1]}`;
-        }
-      } catch (_) {}
+    await page.goto("https://www.tiktok.com/", { waitUntil: "networkidle", timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+    const el = await page.$('[data-e2e="nav-profile"]');
+    if (el) {
+      const href = await el.getAttribute("href");
+      const mx = href && href.match(/\/@([^/?#]+)/);
+      if (mx) return `https://www.tiktok.com/@${mx[1]}`;
     }
   } catch (_) {}
 
