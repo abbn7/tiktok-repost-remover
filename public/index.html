@@ -270,10 +270,12 @@ let running = false;
 let timerInterval;
 
 const socket = io({
-  transports: ["websocket"],
+  transports: ["websocket", "polling"],
   reconnection: true,
   reconnectionDelay: 1000,
-  reconnectionAttempts: 10,
+  reconnectionDelayMax: 5000,
+  reconnectionAttempts: Infinity,
+  timeout: 45000
 });
 
 // ── UI helpers ──────────────────────────────────────────────────

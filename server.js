@@ -18,9 +18,11 @@ const server = http.createServer(app);
 const io     = new Server(server, {
   cors: { origin: "*" },
   maxHttpBufferSize: 10e6,
-  // Give more time before declaring disconnect
-  pingTimeout:  60000,
-  pingInterval: 25000,
+  // Increase timeouts to prevent frequent disconnects on mobile
+  pingTimeout:  120000,
+  pingInterval: 30000,
+  connectTimeout: 45000,
+  allowEIO3: true
 });
 
 app.use(express.static(path.join(__dirname, "public")));
@@ -253,27 +255,25 @@ io.on("connection", socket => {
         }
       }, 3 * 60 * 1000);
       
-      // Extra safety: if login not detected after 2 minutes, try to force-check
+      // Extra safety: if login not detected after 1.5 minutes, try to force-check
       loginCheckTimeout = setTimeout(async () => {
         if (!loginDetected && sessions.get(token)) {
-          console.log(`[login-check] Force checking login status for token:${token.slice(0,8)}`);
-          try {
-            const sess = sessions.get(token);
-            if (sess && sess.page) {
-              const url = sess.page.url();
-              if (!url.includes("/login") && !url.includes("qrcode")) {
-                loginDetected = true;
-                clearInterval(qrInterval);
-                clearTimeout(qrTimeout);
-                emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
-                await startRemoving(token, sess.page);
-              }
+          const sess = sessions.get(token);
+          if (sess && sess.page) {
+            const url = sess.page.url();
+            const hasProfile = await sess.page.$('[data-e2e="nav-profile"]').catch(() => null);
+            console.log(`[login-check-force] token:${token.slice(0,8)} url:${url} profile:${!!hasProfile}`);
+            
+            if ((!url.includes("/login") && !url.includes("qrcode")) || hasProfile) {
+              loginDetected = true;
+              clearInterval(qrInterval);
+              clearTimeout(qrTimeout);
+              emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
+              await startRemoving(token, sess.page);
             }
-          } catch (e) {
-            console.error("Login check error:", e.message);
           }
         }
-      }, 2 * 60 * 1000);
+      }, 90 * 1000);
 
       // Stream screenshots every 2s
       qrInterval = setInterval(async () => {
@@ -286,19 +286,29 @@ io.on("connection", socket => {
           // Login = left /login page
           // More reliable detection: check if NOT on login page AND page has loaded
           const isLoginPage = url.includes("/login") || url.includes("qrcode");
-          const pageTitle = await page.title().catch(() => "");
-          const hasProfileLink = await page.$('[data-e2e="nav-profile"]').catch(() => null);
           
-          if (!isLoginPage && !loginDetected) {
+          // Enhanced detection: look for elements that only appear after login
+          const loggedInSelectors = ['[data-e2e="nav-profile"]', '[data-e2e="nav-upload"]', 'a[href*="/@"]'];
+          let hasLoggedInElement = false;
+          for (const sel of loggedInSelectors) {
+            if (await page.$(sel).catch(() => null)) {
+              hasLoggedInElement = true;
+              break;
+            }
+          }
+
+          if ((!isLoginPage || hasLoggedInElement) && !loginDetected) {
+            console.log(`[login-detected] token:${token.slice(0,8)} url:${url} element:${hasLoggedInElement}`);
             // Double-check: wait a bit and verify we're really logged in
             await page.waitForTimeout(1500);
             const newUrl = page.url();
             const stillNotLogin = !newUrl.includes("/login") && !newUrl.includes("qrcode");
             
-            if (stillNotLogin) {
+            if (stillNotLogin || hasLoggedInElement) {
               loginDetected = true;
               clearInterval(qrInterval);
               clearTimeout(qrTimeout);
+              if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
               emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
               await startRemoving(token, page);
               return;
