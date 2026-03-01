@@ -6,242 +6,157 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="theme-color" content="#07070f"/>
   <title>RepostClear — TikTok Bulk Repost Remover</title>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Tajawal:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet"/>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-
     :root{
-      --bg:       #07070f;
-      --surface:  #0d0d1a;
-      --surface2: #13131f;
-      --border:   rgba(255,255,255,0.07);
-      --red:      #fe2c55;
-      --cyan:     #25f4ee;
-      --gold:     #ffba08;
-      --text:     #ededf5;
-      --muted:    #52526a;
-      --r:14px;
+      --bg:#07070f;--surface:#0d0d1a;--surface2:#13131f;
+      --border:rgba(255,255,255,0.07);
+      --red:#fe2c55;--cyan:#25f4ee;--gold:#ffba08;
+      --text:#ededf5;--muted:#52526a;--r:14px;
     }
+    html,body{min-height:100%;background:var(--bg);color:var(--text);
+      font-family:'Tajawal',sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden;}
 
-    html,body{
-      min-height:100%;
-      background:var(--bg);
-      color:var(--text);
-      font-family:'Tajawal',sans-serif;
-      -webkit-font-smoothing:antialiased;
-      overflow-x:hidden;
-    }
-
-    .bg-mesh{
-      position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;
-    }
-    .bg-mesh::before{
-      content:'';position:absolute;top:-30%;left:-20%;
-      width:70vw;height:70vw;
+    .bg-mesh{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;}
+    .bg-mesh::before{content:'';position:absolute;top:-30%;left:-20%;width:70vw;height:70vw;
       background:radial-gradient(circle,rgba(254,44,85,0.07) 0%,transparent 65%);
-      animation:drift1 18s ease-in-out infinite alternate;
-    }
-    .bg-mesh::after{
-      content:'';position:absolute;bottom:-20%;right:-20%;
-      width:60vw;height:60vw;
+      animation:d1 18s ease-in-out infinite alternate;}
+    .bg-mesh::after{content:'';position:absolute;bottom:-20%;right:-20%;width:60vw;height:60vw;
       background:radial-gradient(circle,rgba(37,244,238,0.05) 0%,transparent 65%);
-      animation:drift2 22s ease-in-out infinite alternate;
-    }
-    @keyframes drift1{to{transform:translate(10%,15%)}}
-    @keyframes drift2{to{transform:translate(-8%,-12%)}}
+      animation:d2 22s ease-in-out infinite alternate;}
+    @keyframes d1{to{transform:translate(10%,15%)}}
+    @keyframes d2{to{transform:translate(-8%,-12%)}}
 
-    .app{
-      position:relative;z-index:1;
-      min-height:100vh;
-      display:flex;flex-direction:column;align-items:center;
-      padding:48px 18px 72px;
-      max-width:460px;margin:0 auto;gap:14px;
-    }
+    .app{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;
+      align-items:center;padding:48px 18px 72px;max-width:460px;margin:0 auto;gap:14px;}
 
-    /* ── Header ── */
+    /* Header */
     .header{text-align:center;}
     .logo-wrap{display:inline-flex;align-items:center;gap:12px;margin-bottom:12px;}
-    .logo-icon{
-      width:56px;height:56px;border-radius:16px;
+    .logo-icon{width:56px;height:56px;border-radius:16px;
       background:linear-gradient(145deg,var(--red),#b01538);
       display:flex;align-items:center;justify-content:center;font-size:26px;
-      box-shadow:0 0 0 1px rgba(254,44,85,0.3),0 8px 32px rgba(254,44,85,0.25);
-    }
+      box-shadow:0 0 0 1px rgba(254,44,85,0.3),0 8px 32px rgba(254,44,85,0.25);}
     .logo-name{font-size:26px;font-weight:900;letter-spacing:-0.5px}
     .logo-name em{color:var(--red);font-style:normal}
     .tagline{font-size:14px;color:var(--muted);line-height:1.65}
 
-    /* ── Cards ── */
-    .card{
-      width:100%;background:var(--surface);
-      border:1px solid var(--border);border-radius:var(--r);
-      padding:24px;
-    }
+    /* Card */
+    .card{width:100%;background:var(--surface);border:1px solid var(--border);
+      border-radius:var(--r);padding:24px;}
 
-    /* ── Steps ── */
+    /* Steps */
     .steps{display:flex;flex-direction:column;gap:14px;margin-bottom:24px}
     .step{display:flex;align-items:flex-start;gap:14px;opacity:0.38;transition:opacity 0.4s}
-    .step.active{opacity:1}
-    .step.done{opacity:0.55}
-    .step-badge{
-      flex-shrink:0;width:30px;height:30px;border-radius:50%;
-      border:1.5px solid var(--muted);
-      display:flex;align-items:center;justify-content:center;
-      font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;
-      transition:all 0.35s;
-    }
-    .step.active .step-badge{
-      background:var(--red);border-color:var(--red);
-      box-shadow:0 0 14px rgba(254,44,85,0.5);
-      animation:badge-pulse 2s ease-in-out infinite;
-    }
+    .step.active{opacity:1}.step.done{opacity:0.55}
+    .step-badge{flex-shrink:0;width:30px;height:30px;border-radius:50%;
+      border:1.5px solid var(--muted);display:flex;align-items:center;justify-content:center;
+      font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;transition:all 0.35s;}
+    .step.active .step-badge{background:var(--red);border-color:var(--red);
+      box-shadow:0 0 14px rgba(254,44,85,0.5);animation:bp 2s ease-in-out infinite;}
     .step.done .step-badge{background:var(--cyan);border-color:var(--cyan);color:#000;animation:none}
-    @keyframes badge-pulse{0%,100%{box-shadow:0 0 14px rgba(254,44,85,0.4)}50%{box-shadow:0 0 24px rgba(254,44,85,0.7)}}
+    @keyframes bp{0%,100%{box-shadow:0 0 14px rgba(254,44,85,0.4)}50%{box-shadow:0 0 24px rgba(254,44,85,0.7)}}
     .step-body strong{display:block;font-size:15px;font-weight:700;margin-bottom:3px}
     .step-body span{font-size:13px;color:var(--muted);line-height:1.5}
 
-    /* ── Buttons ── */
-    .btn-primary{
-      width:100%;padding:17px;
-      background:linear-gradient(135deg,var(--red),#c01540);
-      color:#fff;border:none;border-radius:12px;
-      font-family:'Tajawal',sans-serif;font-size:18px;font-weight:800;
-      cursor:pointer;letter-spacing:0.2px;
+    /* Buttons */
+    .btn-primary{width:100%;padding:17px;background:linear-gradient(135deg,var(--red),#c01540);
+      color:#fff;border:none;border-radius:12px;font-family:'Tajawal',sans-serif;
+      font-size:18px;font-weight:800;cursor:pointer;
       box-shadow:0 4px 28px rgba(254,44,85,0.3);
-      transition:transform 0.15s,box-shadow 0.15s;
-      -webkit-tap-highlight-color:transparent;
-    }
+      transition:transform 0.15s;-webkit-tap-highlight-color:transparent;}
     .btn-primary:active{transform:scale(0.97)}
     .btn-primary:disabled{opacity:0.38;cursor:not-allowed}
-    .btn-ghost{
-      width:100%;margin-top:10px;padding:13px;
-      background:transparent;color:var(--muted);
-      border:1px solid var(--border);border-radius:12px;
+    .btn-ghost{width:100%;margin-top:10px;padding:13px;background:transparent;
+      color:var(--muted);border:1px solid var(--border);border-radius:12px;
       font-family:'Tajawal',sans-serif;font-size:15px;cursor:pointer;
-      transition:border-color 0.2s,color 0.2s;
-      -webkit-tap-highlight-color:transparent;
-    }
+      -webkit-tap-highlight-color:transparent;transition:border-color 0.2s,color 0.2s;}
     .btn-ghost:active{border-color:var(--red);color:var(--red)}
 
-    /* ── QR Card ── */
+    /* QR */
     .qr-card{display:none;text-align:center}
     .qr-card.on{display:block}
     .qr-label{font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.6}
-
     .qr-wrap{position:relative;display:inline-block;border-radius:12px;overflow:hidden;}
     #qr-img{display:block;width:230px;height:230px;object-fit:contain;background:#fff;border-radius:10px;}
-
-    .qr-ring{
-      position:absolute;inset:-3px;border-radius:14px;z-index:-1;filter:blur(2px);
+    .qr-ring{position:absolute;inset:-3px;border-radius:14px;z-index:-1;filter:blur(2px);
       background:conic-gradient(var(--cyan),var(--red),var(--cyan));
-      animation:spin-ring 3s linear infinite;
-    }
-    .qr-ring.captcha-mode{background:conic-gradient(var(--gold),#ff6000,var(--gold));}
-    @keyframes spin-ring{to{transform:rotate(360deg)}}
-
-    .qr-corners{position:absolute;inset:0;border-radius:10px;pointer-events:none}
-    .qr-corners::before,.qr-corners::after{
-      content:'';position:absolute;width:22px;height:22px;
-      border-color:var(--cyan);border-style:solid;
-    }
-    .qr-corners::before{top:6px;right:6px;border-width:2px 2px 0 0;border-radius:0 4px 0 0}
-    .qr-corners::after{bottom:6px;left:6px;border-width:0 0 2px 2px;border-radius:0 0 0 4px}
-
+      animation:sr 3s linear infinite;}
+    .qr-ring.captcha{background:conic-gradient(var(--gold),#ff6000,var(--gold));}
+    @keyframes sr{to{transform:rotate(360deg)}}
     .qr-hint{margin-top:16px;font-size:13px;color:var(--muted);line-height:1.7}
     .qr-hint strong{color:var(--cyan);display:block;font-size:14px;margin-bottom:4px}
+    .qr-timer{display:inline-flex;align-items:center;gap:6px;margin-top:12px;padding:5px 14px;
+      background:rgba(37,244,238,0.06);border:1px solid rgba(37,244,238,0.15);
+      border-radius:999px;font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--cyan);}
+    .tdot{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:bl 1s ease-in-out infinite}
+    @keyframes bl{0%,100%{opacity:1}50%{opacity:0.2}}
 
-    .qr-timer{
-      display:inline-flex;align-items:center;gap:6px;margin-top:12px;
-      padding:5px 14px;background:rgba(37,244,238,0.06);
-      border:1px solid rgba(37,244,238,0.15);border-radius:999px;
-      font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--cyan);
-    }
-    .timer-dot{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:blink 1s ease-in-out infinite}
-    @keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+    /* Connection status */
+    .conn-bar{display:none;width:100%;padding:10px 16px;
+      background:rgba(255,186,8,0.07);border:1px solid rgba(255,186,8,0.2);
+      border-radius:10px;font-size:13px;color:var(--gold);text-align:center;}
+    .conn-bar.on{display:block}
 
-    /* ── CAPTCHA Warning ── */
-    .captcha-warn{
-      display:none;width:100%;
-      padding:16px 18px;
-      background:rgba(255,186,8,0.06);
-      border:1px solid rgba(255,186,8,0.25);
-      border-radius:12px;
-    }
+    /* CAPTCHA warning */
+    .captcha-warn{display:none;width:100%;padding:16px 18px;
+      background:rgba(255,186,8,0.06);border:1px solid rgba(255,186,8,0.25);border-radius:12px;}
     .captcha-warn.on{display:block}
-    .captcha-warn-title{
-      font-size:15px;font-weight:700;color:var(--gold);margin-bottom:8px;
-    }
+    .captcha-warn-title{font-size:15px;font-weight:700;color:var(--gold);margin-bottom:8px}
     .captcha-warn-body{font-size:13px;color:var(--muted);line-height:1.7}
     .captcha-warn-body strong{color:var(--text)}
 
-    /* ── Status bar ── */
-    .status-bar{display:none;width:100%}
-    .status-bar.on{display:block}
-    .status-inner{
-      display:flex;align-items:center;gap:12px;
-      padding:14px 18px;background:var(--surface2);
-      border:1px solid var(--border);border-radius:12px;
-    }
-    .status-spinner{
-      flex-shrink:0;width:18px;height:18px;
+    /* Status */
+    .status-bar{display:none;width:100%}.status-bar.on{display:block}
+    .status-inner{display:flex;align-items:center;gap:12px;padding:14px 18px;
+      background:var(--surface2);border:1px solid var(--border);border-radius:12px;}
+    .status-spinner{flex-shrink:0;width:18px;height:18px;
       border:2px solid rgba(37,244,238,0.2);border-top-color:var(--cyan);
-      border-radius:50%;animation:spin 0.7s linear infinite;
-    }
+      border-radius:50%;animation:spin 0.7s linear infinite;}
     @keyframes spin{to{transform:rotate(360deg)}}
     #status-text{font-size:14px;color:var(--cyan);flex:1}
 
-    /* ── Progress ── */
-    .prog-section{display:none;width:100%}
-    .prog-section.on{display:block}
+    /* Progress */
+    .prog-section{display:none;width:100%}.prog-section.on{display:block}
     .prog-top{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px}
-    .prog-counter{
-      font-family:'IBM Plex Mono',monospace;font-size:48px;font-weight:700;
-      color:var(--red);line-height:1;transition:transform 0.15s;
-    }
-    .prog-counter.bump{transform:scale(1.06)}
+    .prog-num{font-family:'IBM Plex Mono',monospace;font-size:48px;font-weight:700;
+      color:var(--red);line-height:1;transition:transform 0.15s;}
+    .prog-num.bump{transform:scale(1.06)}
     .prog-of{font-size:13px;color:var(--muted);padding-bottom:6px}
     .prog-of span{font-family:'IBM Plex Mono',monospace;color:var(--text)}
     .prog-track{height:5px;background:rgba(255,255,255,0.06);border-radius:999px;overflow:hidden;margin-bottom:14px}
-    .prog-fill{
-      height:100%;width:0%;border-radius:999px;
+    .prog-fill{height:100%;width:0%;border-radius:999px;
       background:linear-gradient(90deg,var(--red),#ff6b9d);
       transition:width 0.6s cubic-bezier(0.22,1,0.36,1);
-      box-shadow:0 0 10px rgba(254,44,85,0.6);
-    }
+      box-shadow:0 0 10px rgba(254,44,85,0.6);}
     .prog-stats{display:flex;gap:20px;font-size:12px;font-family:'IBM Plex Mono',monospace}
     .s-ok{color:var(--cyan)}.s-bad{color:var(--gold)}
 
-    /* ── Complete ── */
-    .complete-card{display:none;text-align:center}
-    .complete-card.on{display:block}
-    .big-check{font-size:72px;display:block;margin-bottom:14px;animation:pop 0.5s cubic-bezier(0.175,0.885,0.32,1.275) both}
+    /* Complete */
+    .complete-card{display:none;text-align:center}.complete-card.on{display:block}
+    .big-check{font-size:72px;display:block;margin-bottom:14px;
+      animation:pop 0.5s cubic-bezier(0.175,0.885,0.32,1.275) both}
     @keyframes pop{from{transform:scale(0);opacity:0}}
     .complete-title{font-size:26px;font-weight:900;margin-bottom:8px}
     .complete-sub{font-size:14px;color:var(--muted);margin-bottom:24px}
     .complete-sub strong{color:var(--text)}
 
-    /* ── Error ── */
-    .err-box{
-      display:none;padding:14px 18px;
-      background:rgba(254,44,85,0.07);border:1px solid rgba(254,44,85,0.2);
-      border-radius:12px;font-size:13px;color:var(--red);text-align:center;width:100%;
-    }
+    /* Error */
+    .err-box{display:none;padding:14px 18px;background:rgba(254,44,85,0.07);
+      border:1px solid rgba(254,44,85,0.2);border-radius:12px;
+      font-size:13px;color:var(--red);text-align:center;width:100%;}
     .err-box.on{display:block}
 
-    /* ── Footer ── */
     .footer{margin-top:auto;padding-top:32px;font-size:11.5px;color:var(--muted);text-align:center;line-height:1.9}
-    .pill{
-      display:inline-flex;align-items:center;gap:5px;
-      padding:3px 10px;border:1px solid var(--border);border-radius:999px;
-      font-size:11px;color:var(--muted);margin-top:8px;
-    }
+    .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
+      border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--muted);margin-top:8px;}
   </style>
 </head>
 <body>
 <div class="bg-mesh"></div>
 <div class="app">
 
-  <!-- Header -->
   <header class="header">
     <div class="logo-wrap">
       <div class="logo-icon">🗑️</div>
@@ -250,7 +165,10 @@
     <p class="tagline">احذف كل ريبوستاتك على TikTok دفعة واحدة<br>بدون تحميل أي تطبيق — يشتغل على iPhone Safari</p>
   </header>
 
-  <!-- Steps / Start card -->
+  <!-- Connection warning -->
+  <div class="conn-bar" id="conn-bar">⚡ إعادة اتصال... جلستك لسه شغالة</div>
+
+  <!-- Steps card -->
   <div class="card" id="main-card">
     <div class="steps">
       <div class="step active" id="s1">
@@ -276,37 +194,32 @@
       </div>
     </div>
     <button class="btn-primary" id="btn-start" onclick="startSession()">ابدأ الآن</button>
-    <button class="btn-ghost"   id="btn-stop"  onclick="stopSession()" style="display:none">⏹ إيقاف</button>
+    <button class="btn-ghost" id="btn-stop" onclick="stopSession()" style="display:none">⏹ إيقاف</button>
   </div>
 
-  <!-- CAPTCHA Warning Banner -->
+  <!-- CAPTCHA warning -->
   <div class="captcha-warn" id="captcha-warn">
     <div class="captcha-warn-title">⚠️ TikTok طلب تحقق أمني</div>
     <div class="captcha-warn-body">
-      السيرفر بيستخدم IP خاص بـ datacenter وTikTok أحياناً بيعرض
-      <strong>CAPTCHA puzzle</strong> بدل QR code.<br><br>
-      الصورة اللي بتشوفها دلوقتي هي <strong>شاشة السيرفر مباشرة</strong>.<br>
-      لو شايف puzzle أو رسالة — مش هيشتغل تلقائياً.<br><br>
-      💡 <strong>الحل:</strong> حاول مرة تانية — أحياناً بيشتغل في المحاولة الثانية أو الثالثة.
+      الصورة اللي بتشوفها دي شاشة السيرفر — ظهر <strong>CAPTCHA puzzle</strong> بدل QR.<br>
+      ده بيحصل بسبب الـ datacenter IP.<br><br>
+      💡 <strong>حاول مرة تانية</strong> — أحياناً بيشتغل في المحاولة الثانية.
     </div>
   </div>
 
   <!-- QR display -->
   <div class="card qr-card" id="qr-card">
-    <p class="qr-label">
-      📱 افتح TikTok ← Profile (أيقونة الشخص) ← ⋯ ← <strong style="color:var(--text)">QR Code</strong>
-    </p>
+    <p class="qr-label">📱 افتح TikTok ← Profile ← ⋯ ← <strong style="color:var(--text)">QR Code</strong></p>
     <div class="qr-wrap">
       <div class="qr-ring" id="qr-ring"></div>
-      <img id="qr-img" alt="QR / Screen"/>
-      <div class="qr-corners"></div>
+      <img id="qr-img" alt="QR Code"/>
     </div>
     <p class="qr-hint">
       <strong>الكود بيتحدث كل ثانيتين</strong>
       صوّره بسرعة قبل ما ينتهي وقته
     </p>
     <div class="qr-timer">
-      <div class="timer-dot"></div>
+      <div class="tdot"></div>
       <span id="timer-text">03:00</span>
     </div>
   </div>
@@ -322,12 +235,10 @@
   <!-- Progress -->
   <div class="card prog-section" id="prog-section">
     <div class="prog-top">
-      <div class="prog-counter" id="prog-num">0</div>
+      <div class="prog-num" id="prog-num">0</div>
       <div class="prog-of">من <span id="prog-total">—</span> ريبوست</div>
     </div>
-    <div class="prog-track">
-      <div class="prog-fill" id="prog-fill"></div>
-    </div>
+    <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
     <div class="prog-stats">
       <span class="s-ok">✓ حُذف: <span id="s-removed">0</span></span>
       <span class="s-bad">✕ فشل: <span id="s-failed">0</span></span>
@@ -345,7 +256,6 @@
   <!-- Error -->
   <div class="err-box" id="err-box"></div>
 
-  <!-- Footer -->
   <footer class="footer">
     بيستخدم QR Login الرسمي من TikTok — مفيش كلمة سر بتتحفظ
     <br><div class="pill">🔒 كل session مؤقتة ومعزولة</div>
@@ -354,37 +264,81 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
-const socket = io({ transports: ["websocket"] });
-const $ = id => document.getElementById(id);
-function on(id) { $(id).classList.add("on"); }
-function off(id) { $(id).classList.remove("on"); }
-function setStatus(msg) { $("status-text").textContent = msg; on("status-bar"); }
+// ── Session token — survives socket reconnects ──────────────────
+let sessionToken = sessionStorage.getItem("rc_token") || null;
+let running = false;
+let timerInterval;
 
+const socket = io({
+  transports: ["websocket"],
+  reconnection: true,
+  reconnectionDelay: 1000,
+  reconnectionAttempts: 10,
+});
+
+// ── UI helpers ──────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const on  = id => $(id).classList.add("on");
+const off = id => $(id).classList.remove("on");
+
+function setStatus(msg) { $("status-text").textContent = msg; on("status-bar"); }
 function setStep(n) {
   [1,2,3].forEach(i => {
     const el = $(`s${i}`);
     el.classList.remove("active","done");
     if (i < n) el.classList.add("done");
-    else if (i === n) el.classList.add("active");
+    else if (i===n) el.classList.add("active");
   });
 }
-
-let timerInterval, running = false;
+function animateTo(id, val) {
+  const el = $(id);
+  if (parseInt(el.textContent)===val) return;
+  el.textContent = val;
+  el.classList.add("bump");
+  setTimeout(() => el.classList.remove("bump"), 200);
+}
 
 function startQRTimer() {
+  clearInterval(timerInterval);
   let secs = 180;
   timerInterval = setInterval(() => {
     secs--;
     if (secs <= 0) { clearInterval(timerInterval); $("timer-text").textContent = "00:00"; return; }
-    const m = String(Math.floor(secs/60)).padStart(2,"0");
-    const s = String(secs%60).padStart(2,"0");
-    $("timer-text").textContent = `${m}:${s}`;
+    $("timer-text").textContent = String(Math.floor(secs/60)).padStart(2,"0")+":"+String(secs%60).padStart(2,"0");
   }, 1000);
 }
 
+// ── Socket lifecycle ────────────────────────────────────────────
+socket.on("connect", () => {
+  console.log("connected:", socket.id);
+  off("conn-bar");
+
+  // Re-attach if we have a running session token
+  if (sessionToken && running) {
+    socket.emit("attach", sessionToken);
+  }
+});
+
+socket.on("disconnect", () => {
+  console.log("disconnected");
+  if (running) on("conn-bar");
+});
+
+socket.on("reattached", () => {
+  console.log("re-attached to session");
+  off("conn-bar");
+});
+
+// Server sends us a token when session starts
+socket.on("session_token", token => {
+  sessionToken = token;
+  sessionStorage.setItem("rc_token", token);
+  running = true;
+});
+
+// ── Actions ─────────────────────────────────────────────────────
 function startSession() {
   if (running) return;
-  running = true;
   $("btn-start").disabled = true;
   $("btn-start").textContent = "جاري البدء...";
   $("btn-stop").style.display = "";
@@ -394,36 +348,28 @@ function startSession() {
 
 function stopSession() {
   socket.emit("stop");
+  sessionToken = null;
+  sessionStorage.removeItem("rc_token");
   running = false;
   $("btn-start").disabled = false;
   $("btn-start").textContent = "ابدأ الآن";
   $("btn-stop").style.display = "none";
-  off("qr-card"); off("status-bar"); off("prog-section");
+  off("qr-card"); off("status-bar"); off("prog-section"); off("conn-bar");
   clearInterval(timerInterval);
 }
 
-function animateTo(id, value) {
-  const el = $(id);
-  if (parseInt(el.textContent) === value) return;
-  el.textContent = value;
-  el.classList.add("bump");
-  setTimeout(() => el.classList.remove("bump"), 200);
-}
-
-// ── Socket events ──────────────────────────────────────────────
+// ── Events ──────────────────────────────────────────────────────
 socket.on("qr_frame", base64 => {
   $("qr-img").src = "data:image/jpeg;base64," + base64;
   if (!$("qr-card").classList.contains("on")) {
-    on("qr-card");
-    startQRTimer();
-    setStep(2);
+    on("qr-card"); startQRTimer(); setStep(2);
   }
 });
 
 socket.on("captcha_detected", () => {
   on("captcha-warn");
-  $("qr-ring").classList.add("captcha-mode");
-  $("qr-hint").innerHTML = '<strong style="color:var(--gold)">⚠️ شاشة السيرفر — ده مش QR code</strong>حاول مرة تانية بعد شوية';
+  $("qr-ring").classList.add("captcha");
+  $("qr-hint").innerHTML = '<strong style="color:var(--gold)">⚠️ ده مش QR — ده شاشة السيرفر</strong>';
 });
 
 socket.on("status", ({ step, msg }) => {
@@ -433,19 +379,19 @@ socket.on("status", ({ step, msg }) => {
   else if (["logged_in","profile","reposts_tab","collecting"].includes(step)) {
     off("qr-card"); clearInterval(timerInterval); setStep(3);
   }
-  else if (step === "removing")  { off("qr-card"); on("prog-section"); setStep(3); }
+  else if (step === "removing") { off("qr-card"); on("prog-section"); setStep(3); }
   else if (["done","stopped"].includes(step)) {
     off("status-bar");
     $("btn-start").disabled = false;
     $("btn-start").textContent = "ابدأ الآن";
     $("btn-stop").style.display = "none";
     running = false;
+    sessionToken = null;
+    sessionStorage.removeItem("rc_token");
   }
 });
 
-socket.on("collecting", ({ found }) => {
-  setStatus(`📋 لقيت ${found} ريبوست لحد دلوقتي...`);
-});
+socket.on("collecting", ({ found }) => setStatus(`📋 لقيت ${found} ريبوست...`));
 
 socket.on("total", n => { $("prog-total").textContent = n; on("prog-section"); });
 
@@ -453,19 +399,20 @@ socket.on("progress", ({ current, total, removed, failed }) => {
   on("prog-section");
   animateTo("prog-num", current);
   $("prog-total").textContent = total;
-  $("s-removed").textContent  = removed;
-  $("s-failed").textContent   = failed;
-  const pct = total > 0 ? (current / total * 100) : 0;
-  $("prog-fill").style.width = pct + "%";
+  $("s-removed").textContent = removed;
+  $("s-failed").textContent  = failed;
+  $("prog-fill").style.width = (total > 0 ? current/total*100 : 0) + "%";
 });
 
 socket.on("complete", ({ removed, failed }) => {
   off("prog-section"); off("status-bar");
   $("complete-sub").innerHTML = removed === 0
     ? "صفحة الريبوستات نظيفة تماماً 💯"
-    : `تم حذف <strong>${removed}</strong> ريبوست${failed > 0 ? ` · فشل ${failed}` : ""}`;
+    : `تم حذف <strong>${removed}</strong> ريبوست${failed>0?` · فشل ${failed}`:""}`;
   on("complete-card");
   running = false;
+  sessionToken = null;
+  sessionStorage.removeItem("rc_token");
 });
 
 socket.on("error", msg => {
@@ -474,9 +421,10 @@ socket.on("error", msg => {
   $("btn-start").disabled = false;
   $("btn-start").textContent = "حاول مرة تانية";
   $("btn-stop").style.display = "none";
-  off("qr-card");
-  clearInterval(timerInterval);
+  off("qr-card"); clearInterval(timerInterval);
   running = false;
+  sessionToken = null;
+  sessionStorage.removeItem("rc_token");
 });
 </script>
 </body>
