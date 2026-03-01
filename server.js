@@ -40,7 +40,6 @@ const SEL = {
   captcha: [
     '[class*="captcha" i]',
     '[id*="captcha" i]',
-    'div[class*="verify"]',
     'img[src*="captcha"]',
   ],
   repostTab: [
@@ -75,7 +74,6 @@ const SEL = {
   ],
   confirmBtn: [
     '[data-e2e="confirm-remove"]',
-    'button:has-text("Remove")',
     '[role="dialog"] button:last-child',
   ],
 };
@@ -381,9 +379,14 @@ async function startRemoving(token, page) {
 
     emit(token, "status", { step: "collecting", msg: "📋 Scanning reposts..." });
 
-    let removed = 0, failed = 0, pass = 0;
+    let removed = 0, failed = 0;
+    const videoUrls = new Set();
 
-    while (pass < 500) {
+    emit(token, "status", { step: "collecting", msg: "📋 Scanning reposts..." });
+
+    let lastVideoCount = 0;
+    let scrollCount = 0;
+    while (scrollCount < 100) { // Limit scrolling to prevent infinite loops
       const sess = sessions.get(token);
       if (!sess || !sess.active) break;
 
@@ -395,87 +398,84 @@ async function startRemoving(token, page) {
         break;
       }
 
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await page.waitForTimeout(800);
-
       const cards = await page.$$(SEL.repostCard.join(","));
-      if (cards.length === 0) break;
-
-      emit(token, "collecting", { found: removed + cards.length });
-
-      let removedThisPass = 0;
-
-      for (const card of cards.slice(0, 5)) {
-        const sess2 = sessions.get(token);
-        if (!sess2 || !sess2.active) break;
-
-        let videoUrl = null;
+      for (const card of cards) {
         try {
-          const link = await card.$('a[href*="/video/"]');
-          if (link) videoUrl = await link.getAttribute("href");
-        } catch (_) {}
-
-        if (!videoUrl) { failed++; continue; }
-
-        const fullUrl = videoUrl.startsWith("http") ? videoUrl : `https://www.tiktok.com${videoUrl}`;
-
-        try {
-          await page.goto(fullUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-          await page.waitForTimeout(1500);
-
-          if (await hasCaptcha(page)) { failed++; await page.goBack(); await page.waitForTimeout(1000); continue; }
-
-          const shareBtn = await findEl(page, "shareBtn", 5000);
-          if (!shareBtn) { failed++; await page.goBack(); await page.waitForTimeout(1000); continue; }
-
-          await shareBtn.click();
-          await page.waitForTimeout(1200);
-
-          const removeBtn = await findEl(page, "removeRepostBtn", 5000);
-          if (!removeBtn) {
-            await page.keyboard.press("Escape");
-            failed++;
-            await page.goBack();
-            await page.waitForTimeout(1000);
-            continue;
+          const link = await card.$("a[href*=\"/video/\"]");
+          if (link) {
+            const videoUrl = await link.getAttribute("href");
+            if (videoUrl) {
+              videoUrls.add(videoUrl.startsWith("http") ? videoUrl : `https://www.tiktok.com${videoUrl}`);
+            }
           }
-
-          await removeBtn.click();
-          await page.waitForTimeout(700);
-
-          try {
-            const conf = await page.$(SEL.confirmBtn.join(","));
-            if (conf) { await conf.click(); await page.waitForTimeout(500); }
-          } catch (_) {}
-
-          removed++;
-          removedThisPass++;
-
-          emit(token, "progress", {
-            current: removed,
-            total: Math.max(removed + failed, removed + cards.length),
-            removed,
-            failed,
-          });
-
-          // Return to profile reposts tab
-          await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-          await page.waitForTimeout(1500);
-          const t2 = await findEl(page, "repostTab", 8000);
-          if (t2) { await t2.click(); await page.waitForTimeout(1500); }
-
-          await rnd(1200, 2500);
-
-        } catch (e) {
-          console.log("Video err:", e.message);
-          failed++;
-          try { await page.goBack(); } catch (_) {}
-          await page.waitForTimeout(800);
-        }
+        } catch (_) {}
       }
 
-      if (removedThisPass === 0) break;
-      pass++;
+      emit(token, "collecting", { found: videoUrls.size });
+
+      if (videoUrls.size === lastVideoCount) {
+        // Scrolled to the end or no new videos loaded
+        break;
+      }
+      lastVideoCount = videoUrls.size;
+
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(1500);
+      scrollCount++;
+    }
+
+    emit(token, "status", { step: "removing", msg: `🗑️ Removing ${videoUrls.size} reposts...` });
+
+    for (const fullUrl of videoUrls) {
+      const sess = sessions.get(token);
+      if (!sess || !sess.active) break;
+
+      try {
+        await page.goto(fullUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await page.waitForTimeout(1500);
+
+        if (await hasCaptcha(page)) { failed++; await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); await page.waitForTimeout(1000); continue; }
+
+        const shareBtn = await findEl(page, "shareBtn", 5000);
+        if (!shareBtn) { failed++; await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); await page.waitForTimeout(1000); continue; }
+
+        await shareBtn.click();
+        await page.waitForTimeout(1200);
+
+        const removeBtn = await findEl(page, "removeRepostBtn", 5000);
+        if (!removeBtn) {
+          await page.keyboard.press("Escape");
+          failed++;
+          await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+          await page.waitForTimeout(1000);
+          continue;
+        }
+
+        await removeBtn.click();
+        await page.waitForTimeout(700);
+
+        try {
+          const conf = await page.$(SEL.confirmBtn.join(","));
+          if (conf) { await conf.click(); await page.waitForTimeout(500); }
+        } catch (_) {}
+
+        removed++;
+
+        emit(token, "progress", {
+          current: removed,
+          total: videoUrls.size,
+          removed,
+          failed,
+        });
+
+        await rnd(1200, 2500);
+
+      } catch (e) {
+        console.log("Video err:", e.message);
+        failed++;
+        try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
+        await page.waitForTimeout(800);
+      }
     }
 
     const msg = removed === 0
