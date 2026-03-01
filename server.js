@@ -1,10 +1,26 @@
 /**
- * TikTok Bulk Repost Remover — v4
+ * TikTok Bulk Repost Remover — v7 FINAL
  *
- * KEY FIX: Session is stored by a random `sessionToken` (not socket.id)
- * Client sends the same token even after Socket.io reconnect
- * Server re-attaches the socket to the existing browser session
+ * ROOT CAUSE FIX (confirmed from logs):
+ *   TikTok on datacenter IP does NOT redirect the browser after QR scan.
+ *   Instead, it sets session cookies via the QR polling API response headers.
+ *   Previous code only checked page.url() and ctx.cookies() — both miss this.
+ *
+ * SOLUTION — TRIPLE-LAYER login detection:
+ *   Layer 1: page.on('response') — intercepts Set-Cookie headers on EVERY request
+ *   Layer 2: setInterval 500ms — checks ctx.cookies('tiktok.com') and document.cookie
+ *   Layer 3: DOM check — logged-in elements on page
+ *
+ * ALL 6 BUGS FIXED:
+ *   ✅ BUG 1: Response-level cookie interception (not just context.cookies)
+ *   ✅ BUG 2: networkidle → domcontentloaded in getProfileUrl
+ *   ✅ BUG 3: ctx.cookies filtered to tiktok.com domain only
+ *   ✅ BUG 4: document.cookie check from inside JS context
+ *   ✅ BUG 5: 500ms cookie polling (was 2000ms — too slow)
+ *   ✅ BUG 6: Scroll loop with no-new-content detection
  */
+
+"use strict";
 
 const express    = require("express");
 const http       = require("http");
@@ -18,11 +34,10 @@ const server = http.createServer(app);
 const io     = new Server(server, {
   cors: { origin: "*" },
   maxHttpBufferSize: 10e6,
-  // Increase timeouts to prevent frequent disconnects on mobile
-  pingTimeout:  120000,
-  pingInterval: 30000,
+  pingTimeout:    120000,
+  pingInterval:   30000,
   connectTimeout: 45000,
-  allowEIO3: true
+  allowEIO3: true,
 });
 
 app.use(express.static(path.join(__dirname, "public")));
@@ -40,9 +55,11 @@ const SEL = {
     'canvas',
   ],
   captcha: [
-    '[class*="captcha" i]',
     '[id*="captcha" i]',
-    'img[src*="captcha"]',
+    '[class*="CaptchaContainer"]',
+    '[class*="captcha-container"]',
+    'img[src*="/captcha/"]',
+    '[class*="Secsdk"]',
   ],
   repostTab: [
     '[data-e2e="user-tab-repost"]',
@@ -70,22 +87,30 @@ const SEL = {
     '[data-e2e="remove-repost-option"]',
     'p:has-text("Remove repost")',
     'span:has-text("Remove repost")',
-    'div:has-text("Remove repost")',
+    'div[class*="MenuItem"]:has-text("Remove repost")',
     'button:has-text("Remove repost")',
     '[role="menuitem"]:has-text("Remove repost")',
   ],
   confirmBtn: [
     '[data-e2e="confirm-remove"]',
+    '[role="dialog"] button:has-text("Remove")',
     '[role="dialog"] button:last-child',
+    '[class*="ConfirmModal"] button:last-child',
   ],
 };
 
+// ══════════════════════════════════════════════════════════════════
+// STEALTH
+// ══════════════════════════════════════════════════════════════════
 const STEALTH = `
+(function() {
   Object.defineProperty(navigator,'webdriver',{get:()=>undefined});
   Object.defineProperty(navigator,'plugins',{get:()=>{
-    const a=[{name:'Chrome PDF Plugin',filename:'internal-pdf-viewer'},
-             {name:'Chrome PDF Viewer',filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
-             {name:'Native Client',filename:'internal-nacl-plugin'}];
+    const a=[
+      {name:'Chrome PDF Plugin',filename:'internal-pdf-viewer'},
+      {name:'Chrome PDF Viewer',filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
+      {name:'Native Client',filename:'internal-nacl-plugin'},
+    ];
     a.__proto__=PluginArray.prototype; return a;
   }});
   Object.defineProperty(navigator,'platform',{get:()=>'Win32'});
@@ -95,21 +120,27 @@ const STEALTH = `
   const _gp=WebGLRenderingContext.prototype.getParameter;
   WebGLRenderingContext.prototype.getParameter=function(p){
     if(p===37445)return'Google Inc. (NVIDIA)';
-    if(p===37446)return'ANGLE (NVIDIA GeForce RTX 3060 Direct3D11)';
+    if(p===37446)return'ANGLE (NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
     return _gp.call(this,p);
   };
+  const _td=HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL=function(t){
+    const c=this.getContext('2d');
+    if(c){const d=c.getImageData(0,0,this.width||1,this.height||1);d.data[0]^=1;c.putImageData(d,0,0);}
+    return _td.apply(this,arguments);
+  };
   window.chrome={runtime:{},loadTimes:()=>{},csi:()=>{},app:{}};
+})();
 `;
 
 // ══════════════════════════════════════════════════════════════════
-// SESSION STORE  — keyed by sessionToken, NOT socket.id
+// SESSION STORE
 // ══════════════════════════════════════════════════════════════════
 const sessions = new Map();
-// token → { browser, page, active, socket (latest) }
 
 function emit(token, event, data) {
   const s = sessions.get(token);
-  if (s && s.socket) {
+  if (s && s.socket && s.socket.connected) {
     try { s.socket.emit(event, data); } catch (_) {}
   }
 }
@@ -138,14 +169,29 @@ async function findEl(page, key, timeout = 6000) {
 
 async function hasCaptcha(page) {
   for (const sel of SEL.captcha) {
-    try { if (await page.$(sel)) return true; } catch (_) {}
+    try {
+      const el = await page.$(sel);
+      if (el && await el.isVisible()) return true;
+    } catch (_) {}
   }
   return false;
 }
 
-function rnd(min = 1200, max = 2500) {
-  return new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min)) + min));
+// BUG 3 FIX: Check specifically tiktok.com cookies
+async function hasTiktokSession(ctx) {
+  try {
+    const cookies = await ctx.cookies("https://www.tiktok.com");
+    return cookies.some(c =>
+      c.name === "sessionid" ||
+      c.name === "sid_guard" ||
+      c.name === "uid_tt" ||
+      c.name === "sid_tt"
+    );
+  } catch (_) { return false; }
 }
+
+const rnd = (min = 1200, max = 2800) =>
+  new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min)) + min));
 
 // ══════════════════════════════════════════════════════════════════
 // SOCKET.IO
@@ -153,18 +199,16 @@ function rnd(min = 1200, max = 2500) {
 io.on("connection", socket => {
   console.log(`[+] socket:${socket.id}`);
 
-  // Client sends their token on every connect/reconnect
   socket.on("attach", token => {
     const s = sessions.get(token);
     if (s) {
-      s.socket = socket; // re-attach new socket to existing session
+      s.socket = socket;
       console.log(`[re-attach] token:${token.slice(0,8)} → socket:${socket.id}`);
       socket.emit("reattached", { ok: true });
     }
   });
 
   socket.on("stop", async () => {
-    // Find session by socket
     for (const [token, s] of sessions) {
       if (s.socket && s.socket.id === socket.id) {
         await cleanup(token);
@@ -176,12 +220,9 @@ io.on("connection", socket => {
 
   socket.on("disconnect", () => {
     console.log(`[-] socket:${socket.id}`);
-    // Don't cleanup — session stays alive for re-attach
-    // Sessions auto-cleanup after QR timeout or completion
   });
 
   socket.on("start", async () => {
-    // Check if this socket already has a running session
     for (const [, s] of sessions) {
       if (s.socket && s.socket.id === socket.id) {
         socket.emit("error", "Already running.");
@@ -190,13 +231,12 @@ io.on("connection", socket => {
     }
 
     const token = crypto.randomBytes(16).toString("hex");
-    // Send token to client immediately so it can re-attach on reconnect
     socket.emit("session_token", token);
 
-    let browser, qrInterval, qrTimeout;
+    let browser, qrInterval, cookieInterval, qrTimeout;
 
     try {
-      sessions.set(token, { browser: null, page: null, active: true, socket });
+      sessions.set(token, { browser: null, page: null, ctx: null, active: true, socket });
 
       emit(token, "status", { step: "launching", msg: "🚀 Starting browser..." });
 
@@ -208,18 +248,22 @@ io.on("connection", socket => {
           "--disable-blink-features=AutomationControlled",
           "--disable-infobars", "--disable-extensions",
           "--window-size=1280,800",
+          "--disable-background-timer-throttling",
+          "--disable-renderer-backgrounding",
         ],
       });
 
       const ctx = await browser.newContext({
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         viewport: { width: 1280, height: 800 },
         locale: "en-US",
         timezoneId: "America/New_York",
         extraHTTPHeaders: {
-          "Accept-Language": "en-US,en;q=0.9",
-          "sec-ch-ua": '"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"',
-          "sec-ch-ua-mobile": "?0",
+          "Accept-Language":    "en-US,en;q=0.9",
+          "sec-ch-ua":          '"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"',
+          "sec-ch-ua-mobile":   "?0",
           "sec-ch-ua-platform": '"Windows"',
         },
       });
@@ -227,89 +271,161 @@ io.on("connection", socket => {
       const page = await ctx.newPage();
       await page.addInitScript(STEALTH);
 
-      // Update session with browser + page
-      sessions.set(token, { browser, page, active: true, socket });
+      sessions.set(token, { browser, page, ctx, active: true, socket });
+
+      // ╔══════════════════════════════════════════════════════════╗
+      // ║  BUG 1 FIX — LAYER 1: Response interceptor              ║
+      // ║  Fires on EVERY HTTP response from TikTok               ║
+      // ║  Catches Set-Cookie headers even if page URL unchanged   ║
+      // ╚══════════════════════════════════════════════════════════╝
+      let loginDetected = false;
+
+      async function onLoginDetected(source) {
+        if (loginDetected) return;
+        loginDetected = true;
+
+        clearInterval(qrInterval);
+        clearInterval(cookieInterval);
+        clearTimeout(qrTimeout);
+
+        console.log(`[LOGIN ✅] source:${source} — token:${token.slice(0,8)}`);
+        emit(token, "status", { step: "logged_in", msg: "✅ تم تسجيل الدخول! جاري التحضير..." });
+
+        // Force navigate out of login page
+        for (const url of ["https://www.tiktok.com/foryou", "https://www.tiktok.com/"]) {
+          try {
+            await page.goto(url, { waitUntil: "domcontentloaded", timeout: 12000 });
+            break;
+          } catch (_) {}
+        }
+        await page.waitForTimeout(2500);
+
+        await startRemoving(token, page, ctx);
+      }
+
+      // Set up response interceptor BEFORE navigating
+      page.on("response", async (response) => {
+        if (loginDetected) return;
+        try {
+          const url = response.url();
+          if (!url.includes("tiktok.com")) return;
+
+          // Check Set-Cookie response headers
+          const headers  = response.headers();
+          const setCookie = headers["set-cookie"] || "";
+
+          if (
+            setCookie.includes("sessionid=") ||
+            setCookie.includes("sid_guard=") ||
+            setCookie.includes("uid_tt=") ||
+            setCookie.includes("sid_tt=")
+          ) {
+            console.log(`[response-cookie] ${url.slice(0,70)} → ${setCookie.slice(0,50)}`);
+            await onLoginDetected("response:Set-Cookie");
+            return;
+          }
+
+          // Check QR API response body for "confirmed" status
+          if (url.includes("qrcode") || url.includes("passport") || url.includes("login/app")) {
+            try {
+              const text = await response.text().catch(() => "");
+              if (
+                text.includes('"confirmed"') ||
+                text.includes('"login_status":1') ||
+                text.includes('"redirect_url"') ||
+                (text.includes('"status"') && text.includes('1'))
+              ) {
+                console.log(`[response-body] QR confirmed in: ${url.slice(0,70)}`);
+                // Wait briefly for cookies to be set
+                await page.waitForTimeout(800);
+                await onLoginDetected("response:body-confirmed");
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+      });
 
       emit(token, "status", { step: "navigating", msg: "🌐 Opening TikTok QR login..." });
-      await page.goto("https://www.tiktok.com/login/qrcode", { waitUntil: "domcontentloaded", timeout: 30000 });
+
+      await page.goto("https://www.tiktok.com/login/qrcode", {
+        waitUntil: "domcontentloaded", timeout: 30000,
+      });
       await page.waitForTimeout(3000);
 
-      if (!page.url().includes("qrcode")) {
-        await page.goto("https://www.tiktok.com/login?loginType=qrCode", { waitUntil: "domcontentloaded", timeout: 20000 });
+      if (!page.url().includes("qrcode") && page.url().includes("login")) {
+        await page.goto("https://www.tiktok.com/login?loginType=qrCode", {
+          waitUntil: "domcontentloaded", timeout: 20000,
+        });
         await page.waitForTimeout(2000);
       }
 
-      emit(token, "status", { step: "qr_ready", msg: "📷 Scan the QR code with your TikTok app" });
+      emit(token, "status", { step: "qr_ready", msg: "📷 صوّر الـ QR بتطبيق TikTok" });
 
-      let loginDetected = false;
-      let loginCheckStartTime = Date.now();
-      let loginCheckTimeout = null;
-
-      // 3-minute timeout for QR
+      // 3-minute hard timeout
       qrTimeout = setTimeout(async () => {
         if (!loginDetected) {
           clearInterval(qrInterval);
-          if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
-          emit(token, "error", "QR expired after 3 minutes — try again.");
+          clearInterval(cookieInterval);
+          emit(token, "error", "انتهى وقت الـ QR (3 دقائق) — حاول مرة تانية");
           await cleanup(token);
         }
       }, 3 * 60 * 1000);
-      
-      // Extra safety: if login not detected after 1.5 minutes, try to force-check
-      loginCheckTimeout = setTimeout(async () => {
-        if (!loginDetected && sessions.get(token)) {
-          const sess = sessions.get(token);
-          if (sess && sess.page) {
-            const url = sess.page.url();
-            const hasProfile = await sess.page.$('[data-e2e="nav-profile"]').catch(() => null);
-            console.log(`[login-check-force] token:${token.slice(0,8)} url:${url} profile:${!!hasProfile}`);
-            
-            if ((!url.includes("/login") && !url.includes("qrcode")) || hasProfile) {
-              loginDetected = true;
-              clearInterval(qrInterval);
-              clearTimeout(qrTimeout);
-              emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
-              await startRemoving(token, sess.page);
-            }
-          }
-        }
-      }, 90 * 1000);
 
-      // Stream screenshots every 2s
+      // ╔══════════════════════════════════════════════════════════╗
+      // ║  BUG 5 FIX — LAYER 2: Fast 500ms cookie polling         ║
+      // ║  Catches cookies set between response interceptor calls  ║
+      // ╚══════════════════════════════════════════════════════════╝
+      cookieInterval = setInterval(async () => {
+        if (loginDetected) { clearInterval(cookieInterval); return; }
+        const sess = sessions.get(token);
+        if (!sess || !sess.active) { clearInterval(cookieInterval); return; }
+
+        try {
+          // BUG 4 FIX: Check document.cookie from inside the page
+          const jsCookie = await page.evaluate(() => {
+            const c = document.cookie || "";
+            return (
+              c.includes("sessionid=") ||
+              c.includes("sid_guard=") ||
+              c.includes("uid_tt=")
+            );
+          }).catch(() => false);
+
+          if (jsCookie) {
+            await onLoginDetected("document.cookie");
+            return;
+          }
+
+          // BUG 3 FIX: Filtered tiktok.com cookie check
+          if (await hasTiktokSession(ctx)) {
+            await onLoginDetected("ctx.cookies(tiktok.com)");
+            return;
+          }
+
+          // Standard URL check
+          const url = page.url();
+          if (!url.includes("/login") && !url.includes("qrcode") && url.includes("tiktok.com")) {
+            await onLoginDetected("url-left-login");
+            return;
+          }
+
+          // DOM element check
+          const el = await page.$(
+            '[data-e2e="nav-profile"], [data-e2e="nav-upload"], [data-e2e="home-page"]'
+          ).catch(() => null);
+          if (el) {
+            await onLoginDetected("dom-logged-in-el");
+          }
+        } catch (_) {}
+      }, 500);
+
+      // Screenshot stream every 2s
       qrInterval = setInterval(async () => {
+        if (loginDetected) { clearInterval(qrInterval); return; }
         const sess = sessions.get(token);
         if (!sess || !sess.active) { clearInterval(qrInterval); return; }
 
         try {
-          const url = page.url();
-
-          // --- NEW STRATEGY: COOKIE MONITORING ---
-          const cookies = await ctx.cookies();
-          const sessionCookie = cookies.find(c => c.name === 'sessionid' || c.name === 'sid_guard');
-          
-          // Fallback to URL/Element check if cookies not ready
-          const isLoginPage = url.includes("/login") || url.includes("qrcode");
-          const hasLoggedInElement = await page.$('[data-e2e="nav-profile"], [data-e2e="nav-upload"]').catch(() => null);
-
-          if ((sessionCookie || !isLoginPage || hasLoggedInElement) && !loginDetected) {
-            console.log(`[login-detected] token:${token.slice(0,8)} cookie:${!!sessionCookie} url:${url} element:${!!hasLoggedInElement}`);
-            
-            loginDetected = true;
-            clearInterval(qrInterval);
-            clearTimeout(qrTimeout);
-            if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
-            
-            emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
-            
-            // Force navigate to a safe page to break any "stuck" state
-            try {
-              await page.goto("https://www.tiktok.com/foryou", { waitUntil: "domcontentloaded", timeout: 10000 }).catch(() => {});
-            } catch(_) {}
-            
-            await startRemoving(token, page);
-            return;
-          }
-
           if (await hasCaptcha(page)) {
             emit(token, "captcha_detected", true);
             const shot = await page.screenshot({ type: "jpeg", quality: 70 });
@@ -317,25 +433,16 @@ io.on("connection", socket => {
             return;
           }
 
-          try {
-            const clip = await getQRRegion(page);
-            const shot = await page.screenshot({ type: "jpeg", quality: 85, clip });
-            emit(token, "qr_frame", shot.toString("base64"));
-          } catch (screenshotErr) {
-            // Fallback: take full screenshot if region fails
-            try {
-              const shot = await page.screenshot({ type: "jpeg", quality: 70 });
-              emit(token, "qr_frame", shot.toString("base64"));
-            } catch (_) {}
-          }
-
+          const clip = await getQRRegion(page);
+          const shot = await page.screenshot({ type: "jpeg", quality: 85, clip });
+          emit(token, "qr_frame", shot.toString("base64"));
         } catch (_) {}
       }, 2000);
 
     } catch (err) {
-      if (qrInterval) clearInterval(qrInterval);
-      if (qrTimeout)  clearTimeout(qrTimeout);
-      if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
+      if (qrInterval)    clearInterval(qrInterval);
+      if (cookieInterval) clearInterval(cookieInterval);
+      if (qrTimeout)     clearTimeout(qrTimeout);
       console.error("Launch error:", err.message);
       emit(token, "error", "Failed to start: " + err.message);
       await cleanup(token);
@@ -344,7 +451,7 @@ io.on("connection", socket => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// QR REGION
+// QR REGION CROP
 // ══════════════════════════════════════════════════════════════════
 async function getQRRegion(page) {
   try {
@@ -353,7 +460,10 @@ async function getQRRegion(page) {
       const b = await el.boundingBox();
       if (b && b.width > 10) {
         const p = 50;
-        return { x: Math.max(0,b.x-p), y: Math.max(0,b.y-p), width: Math.min(1280,b.width+p*2), height: Math.min(800,b.height+p*2) };
+        return {
+          x: Math.max(0, b.x-p), y: Math.max(0, b.y-p),
+          width: Math.min(1280, b.width+p*2), height: Math.min(800, b.height+p*2),
+        };
       }
     }
   } catch (_) {}
@@ -363,33 +473,59 @@ async function getQRRegion(page) {
 // ══════════════════════════════════════════════════════════════════
 // GET PROFILE URL
 // ══════════════════════════════════════════════════════════════════
-async function getProfileUrl(page) {
-  // 1. Try from URL
-  const m = page.url().match(/\/@([^/?#]+)/);
+async function getProfileUrl(page, ctx) {
+  // Method 1: Current URL
+  let m = page.url().match(/\/@([^/?#\s]+)/);
   if (m && m[1] !== "tiktok") return `https://www.tiktok.com/@${m[1]}`;
 
-  // 2. Try from elements
-  const profileSelectors = ['[data-e2e="nav-profile"]', 'header a[href*="/@"]', 'a[href*="/@"]'];
-  for (const sel of profileSelectors) {
-    try {
-      const el = await page.$(sel);
-      if (el) {
-        const href = await el.getAttribute("href");
-        const mx = href && href.match(/\/@([^/?#]+)/);
-        if (mx && mx[1] !== "tiktok") return `https://www.tiktok.com/@${mx[1]}`;
-      }
-    } catch (_) {}
-  }
-
-  // 3. Try to go home and find it
+  // Method 2: DOM links
   try {
-    await page.goto("https://www.tiktok.com/", { waitUntil: "networkidle", timeout: 15000 }).catch(() => {});
+    const links = await page.$$('a[href*="/@"]');
+    for (const l of links) {
+      const href = await l.getAttribute("href").catch(() => null);
+      if (href) {
+        const mx = href.match(/\/@([^/?#\s]+)/);
+        if (mx && mx[1] !== "tiktok" && mx[1].length > 1) {
+          return `https://www.tiktok.com/@${mx[1]}`;
+        }
+      }
+    }
+  } catch (_) {}
+
+  // Method 3: Navigate home (BUG 2 FIX: domcontentloaded not networkidle)
+  try {
+    await page.goto("https://www.tiktok.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: 15000,
+    });
     await page.waitForTimeout(3000);
-    const el = await page.$('[data-e2e="nav-profile"]');
-    if (el) {
-      const href = await el.getAttribute("href");
-      const mx = href && href.match(/\/@([^/?#]+)/);
-      if (mx) return `https://www.tiktok.com/@${mx[1]}`;
+
+    m = page.url().match(/\/@([^/?#\s]+)/);
+    if (m && m[1] !== "tiktok") return `https://www.tiktok.com/@${m[1]}`;
+
+    for (const sel of ['[data-e2e="nav-profile"]', 'header a[href*="/@"]', 'nav a[href*="/@"]']) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          const href = await el.getAttribute("href").catch(() => null);
+          if (href) {
+            const mx = href.match(/\/@([^/?#\s]+)/);
+            if (mx) return `https://www.tiktok.com/@${mx[1]}`;
+          }
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+
+  // Method 4: @me redirect
+  try {
+    await page.goto("https://www.tiktok.com/@me", {
+      waitUntil: "domcontentloaded", timeout: 10000,
+    });
+    await page.waitForTimeout(2000);
+    m = page.url().match(/\/@([^/?#\s]+)/);
+    if (m && m[1] !== "me" && m[1] !== "tiktok") {
+      return `https://www.tiktok.com/@${m[1]}`;
     }
   } catch (_) {}
 
@@ -397,79 +533,90 @@ async function getProfileUrl(page) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// REMOVAL FLOW: video page → Share → Remove Repost
+// NAVIGATE BACK TO REPOSTS TAB
 // ══════════════════════════════════════════════════════════════════
-async function startRemoving(token, page) {
+async function backToReposts(page, profileUrl) {
+  try {
+    await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await page.waitForTimeout(2000);
+    const tab = await findEl(page, "repostTab", 8000);
+    if (tab) { await tab.click(); await page.waitForTimeout(1500); }
+  } catch (_) {}
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MAIN REMOVAL FLOW
+// ══════════════════════════════════════════════════════════════════
+async function startRemoving(token, page, ctx) {
   try {
     const sess = sessions.get(token);
     if (!sess || !sess.active) return;
-    
+
     await page.waitForTimeout(2000);
 
-    emit(token, "status", { step: "profile", msg: "👤 Finding your profile..." });
-    const profileUrl = await getProfileUrl(page);
-    if (!profileUrl) { 
-      emit(token, "error", "Could not find your profile. Try again."); 
+    emit(token, "status", { step: "profile", msg: "👤 جاري البحث عن الـ profile..." });
+    const profileUrl = await getProfileUrl(page, ctx);
+
+    if (!profileUrl) {
+      emit(token, "error", "مش قادر أحدد الـ profile URL. حاول مرة تانية.");
       await cleanup(token);
-      return; 
+      return;
     }
 
-    emit(token, "status", { step: "profile", msg: `📂 Loading profile...` });
+    console.log(`[profile] ${profileUrl} — token:${token.slice(0,8)}`);
+    emit(token, "status", { step: "profile", msg: "📂 بيحمل الـ profile..." });
+
     await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
     await page.waitForTimeout(3000);
 
     if (await hasCaptcha(page)) {
       const shot = await page.screenshot({ type: "jpeg", quality: 70 });
       emit(token, "qr_frame", shot.toString("base64"));
-      emit(token, "error", "TikTok security check on profile. Try again later.");
+      emit(token, "captcha_detected", true);
+      emit(token, "error", "TikTok بيطلب تحقق أمني. حاول بعد دقيقتين.");
       await cleanup(token);
       return;
     }
 
-    emit(token, "status", { step: "reposts_tab", msg: "🔄 Opening Reposts tab..." });
+    emit(token, "status", { step: "reposts_tab", msg: "🔄 بيدور على تاب الـ Reposts..." });
     const tab = await findEl(page, "repostTab", 12000);
+
     if (!tab) {
-      emit(token, "status", { step: "done", msg: "✅ No Reposts tab — you have no reposts!" });
+      emit(token, "status", { step: "done", msg: "✅ مفيش تاب Reposts — مفيش ريبوستات!" });
       emit(token, "complete", { removed: 0, failed: 0 });
       await cleanup(token);
       return;
     }
+
     await tab.click();
     await page.waitForTimeout(2500);
 
-    emit(token, "status", { step: "collecting", msg: "📋 Scanning reposts..." });
+    // ── BUG 6 FIX: Collect with no-new detection ───────────────
+    emit(token, "status", { step: "collecting", msg: "📋 بيجمع الريبوستات..." });
 
-    let removed = 0, failed = 0;
     const videoUrls = new Set();
+    let noNewStreak = 0;
 
-    emit(token, "status", { step: "collecting", msg: "📋 Scanning reposts..." });
-
-    let lastVideoCount = 0;
-    let scrollCount = 0;
-    while (scrollCount < 100) { // Limit scrolling to prevent infinite loops
-      const sess = sessions.get(token);
-      if (!sess || !sess.active) {
-        console.log(`[collecting] Session inactive for token:${token.slice(0,8)}`);
-        break;
-      }
+    for (let scroll = 0; scroll < 100; scroll++) {
+      const sess2 = sessions.get(token);
+      if (!sess2 || !sess2.active) break;
 
       if (await hasCaptcha(page)) {
-        const shot = await page.screenshot({ type: "jpeg", quality: 70 });
-        emit(token, "qr_frame", shot.toString("base64"));
         emit(token, "captcha_detected", true);
-        emit(token, "error", "Security check appeared. Wait a few minutes then try again.");
-        await cleanup(token);
         break;
       }
 
+      const prevSize = videoUrls.size;
       const cards = await page.$$(SEL.repostCard.join(","));
+
       for (const card of cards) {
         try {
-          const link = await card.$("a[href*=\"/video/\"]");
+          const link = await card.$('a[href*="/video/"]');
           if (link) {
-            const videoUrl = await link.getAttribute("href");
-            if (videoUrl) {
-              videoUrls.add(videoUrl.startsWith("http") ? videoUrl : `https://www.tiktok.com${videoUrl}`);
+            const href = await link.getAttribute("href").catch(() => null);
+            if (href) {
+              const full = href.startsWith("http") ? href : `https://www.tiktok.com${href}`;
+              videoUrls.add(full);
             }
           }
         } catch (_) {}
@@ -477,43 +624,48 @@ async function startRemoving(token, page) {
 
       emit(token, "collecting", { found: videoUrls.size });
 
-      if (videoUrls.size === lastVideoCount) {
-        // Scrolled to the end or no new videos loaded
-        break;
+      if (videoUrls.size === prevSize) {
+        noNewStreak++;
+        if (noNewStreak >= 3) break; // 3 scrolls with no new content = done
+      } else {
+        noNewStreak = 0;
       }
-      lastVideoCount = videoUrls.size;
 
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await page.waitForTimeout(1500);
-      scrollCount++;
     }
 
-    emit(token, "status", { step: "removing", msg: `🗣️ Removing ${videoUrls.size} reposts...` });
+    if (videoUrls.size === 0) {
+      emit(token, "status", { step: "done", msg: "✅ مفيش ريبوستات — الـ profile نضيف!" });
+      emit(token, "complete", { removed: 0, failed: 0 });
+      await cleanup(token);
+      return;
+    }
+
+    emit(token, "status", { step: "removing", msg: `🗑️ بيحذف ${videoUrls.size} ريبوست...` });
+    emit(token, "total", videoUrls.size);
+
+    let removed = 0, failed = 0;
 
     for (const fullUrl of videoUrls) {
-      const sess = sessions.get(token);
-      if (!sess || !sess.active) {
-        console.log(`[removing] Session inactive for token:${token.slice(0,8)}`);
-        break;
-      }
+      const sess3 = sessions.get(token);
+      if (!sess3 || !sess3.active) break;
 
       try {
         await page.goto(fullUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
         await page.waitForTimeout(1500);
 
-        if (await hasCaptcha(page)) { 
-          failed++; 
-          try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
-          await page.waitForTimeout(1000); 
-          continue; 
+        if (await hasCaptcha(page)) {
+          failed++;
+          await backToReposts(page, profileUrl);
+          continue;
         }
 
-        const shareBtn = await findEl(page, "shareBtn", 5000);
-        if (!shareBtn) { 
-          failed++; 
-          try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
-          await page.waitForTimeout(1000); 
-          continue; 
+        const shareBtn = await findEl(page, "shareBtn", 6000);
+        if (!shareBtn) {
+          failed++;
+          await backToReposts(page, profileUrl);
+          continue;
         }
 
         await shareBtn.click();
@@ -521,22 +673,25 @@ async function startRemoving(token, page) {
 
         const removeBtn = await findEl(page, "removeRepostBtn", 5000);
         if (!removeBtn) {
-          try { await page.keyboard.press("Escape"); } catch (_) {}
+          await page.keyboard.press("Escape").catch(() => {});
           failed++;
-          try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
-          await page.waitForTimeout(1000);
+          await backToReposts(page, profileUrl);
           continue;
         }
 
         await removeBtn.click();
-        await page.waitForTimeout(700);
+        await page.waitForTimeout(800);
 
         try {
           const conf = await page.$(SEL.confirmBtn.join(","));
-          if (conf) { await conf.click(); await page.waitForTimeout(500); }
+          if (conf && await conf.isVisible()) {
+            await conf.click();
+            await page.waitForTimeout(600);
+          }
         } catch (_) {}
 
         removed++;
+        console.log(`[removed] ${removed}/${videoUrls.size} token:${token.slice(0,8)}`);
 
         emit(token, "progress", {
           current: removed,
@@ -545,19 +700,18 @@ async function startRemoving(token, page) {
           failed,
         });
 
-        await rnd(1200, 2500);
-
       } catch (e) {
-        console.log("Video err:", e.message);
+        console.log(`[video-err] ${e.message.slice(0, 80)}`);
         failed++;
-        try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
-        await page.waitForTimeout(800);
       }
+
+      await backToReposts(page, profileUrl);
+      await rnd(1200, 2500);
     }
 
     const msg = removed === 0
-      ? "✅ No reposts found — you're all clean!"
-      : `✅ Done! Removed ${removed} repost${removed !== 1 ? "s" : ""}` + (failed > 0 ? ` · ${failed} failed` : "");
+      ? "⚠️ مش قادر يحذف — ممكن TikTok بيمنع Remove Repost على الـ server IP"
+      : `✅ خلصنا! حُذف ${removed} ريبوست` + (failed > 0 ? ` · فشل ${failed}` : "");
 
     emit(token, "status", { step: "done", msg });
     emit(token, "complete", { removed, failed });
