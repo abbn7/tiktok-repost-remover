@@ -490,7 +490,7 @@ async function startRemoving(token, page) {
     console.error("Removal error:", err.message);
     emit(token, "error", "Error: " + err.message);
     await cleanup(token);
-
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════
