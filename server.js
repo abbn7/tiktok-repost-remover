@@ -240,15 +240,40 @@ io.on("connection", socket => {
       emit(token, "status", { step: "qr_ready", msg: "📷 Scan the QR code with your TikTok app" });
 
       let loginDetected = false;
+      let loginCheckStartTime = Date.now();
+      let loginCheckTimeout = null;
 
-      // 3-minute timeout
+      // 3-minute timeout for QR
       qrTimeout = setTimeout(async () => {
         if (!loginDetected) {
           clearInterval(qrInterval);
+          if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
           emit(token, "error", "QR expired after 3 minutes — try again.");
           await cleanup(token);
         }
       }, 3 * 60 * 1000);
+      
+      // Extra safety: if login not detected after 2 minutes, try to force-check
+      loginCheckTimeout = setTimeout(async () => {
+        if (!loginDetected && sessions.get(token)) {
+          console.log(`[login-check] Force checking login status for token:${token.slice(0,8)}`);
+          try {
+            const sess = sessions.get(token);
+            if (sess && sess.page) {
+              const url = sess.page.url();
+              if (!url.includes("/login") && !url.includes("qrcode")) {
+                loginDetected = true;
+                clearInterval(qrInterval);
+                clearTimeout(qrTimeout);
+                emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
+                await startRemoving(token, sess.page);
+              }
+            }
+          } catch (e) {
+            console.error("Login check error:", e.message);
+          }
+        }
+      }, 2 * 60 * 1000);
 
       // Stream screenshots every 2s
       qrInterval = setInterval(async () => {
@@ -259,13 +284,25 @@ io.on("connection", socket => {
           const url = page.url();
 
           // Login = left /login page
-          if (!url.includes("/login") && !loginDetected) {
-            loginDetected = true;
-            clearInterval(qrInterval);
-            clearTimeout(qrTimeout);
-            emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
-            await startRemoving(token, page);
-            return;
+          // More reliable detection: check if NOT on login page AND page has loaded
+          const isLoginPage = url.includes("/login") || url.includes("qrcode");
+          const pageTitle = await page.title().catch(() => "");
+          const hasProfileLink = await page.$('[data-e2e="nav-profile"]').catch(() => null);
+          
+          if (!isLoginPage && !loginDetected) {
+            // Double-check: wait a bit and verify we're really logged in
+            await page.waitForTimeout(1500);
+            const newUrl = page.url();
+            const stillNotLogin = !newUrl.includes("/login") && !newUrl.includes("qrcode");
+            
+            if (stillNotLogin) {
+              loginDetected = true;
+              clearInterval(qrInterval);
+              clearTimeout(qrTimeout);
+              emit(token, "status", { step: "logged_in", msg: "✅ Logged in! Finding profile..." });
+              await startRemoving(token, page);
+              return;
+            }
           }
 
           if (await hasCaptcha(page)) {
@@ -275,9 +312,17 @@ io.on("connection", socket => {
             return;
           }
 
-          const clip = await getQRRegion(page);
-          const shot = await page.screenshot({ type: "jpeg", quality: 85, clip });
-          emit(token, "qr_frame", shot.toString("base64"));
+          try {
+            const clip = await getQRRegion(page);
+            const shot = await page.screenshot({ type: "jpeg", quality: 85, clip });
+            emit(token, "qr_frame", shot.toString("base64"));
+          } catch (screenshotErr) {
+            // Fallback: take full screenshot if region fails
+            try {
+              const shot = await page.screenshot({ type: "jpeg", quality: 70 });
+              emit(token, "qr_frame", shot.toString("base64"));
+            } catch (_) {}
+          }
 
         } catch (_) {}
       }, 2000);
@@ -285,6 +330,7 @@ io.on("connection", socket => {
     } catch (err) {
       if (qrInterval) clearInterval(qrInterval);
       if (qrTimeout)  clearTimeout(qrTimeout);
+      if (loginCheckTimeout) clearTimeout(loginCheckTimeout);
       console.error("Launch error:", err.message);
       emit(token, "error", "Failed to start: " + err.message);
       await cleanup(token);
@@ -350,11 +396,18 @@ async function getProfileUrl(page) {
 // ══════════════════════════════════════════════════════════════════
 async function startRemoving(token, page) {
   try {
+    const sess = sessions.get(token);
+    if (!sess || !sess.active) return;
+    
     await page.waitForTimeout(2000);
 
     emit(token, "status", { step: "profile", msg: "👤 Finding your profile..." });
     const profileUrl = await getProfileUrl(page);
-    if (!profileUrl) { emit(token, "error", "Could not find your profile. Try again."); return; }
+    if (!profileUrl) { 
+      emit(token, "error", "Could not find your profile. Try again."); 
+      await cleanup(token);
+      return; 
+    }
 
     emit(token, "status", { step: "profile", msg: `📂 Loading profile...` });
     await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
@@ -364,6 +417,7 @@ async function startRemoving(token, page) {
       const shot = await page.screenshot({ type: "jpeg", quality: 70 });
       emit(token, "qr_frame", shot.toString("base64"));
       emit(token, "error", "TikTok security check on profile. Try again later.");
+      await cleanup(token);
       return;
     }
 
@@ -372,6 +426,7 @@ async function startRemoving(token, page) {
     if (!tab) {
       emit(token, "status", { step: "done", msg: "✅ No Reposts tab — you have no reposts!" });
       emit(token, "complete", { removed: 0, failed: 0 });
+      await cleanup(token);
       return;
     }
     await tab.click();
@@ -388,13 +443,17 @@ async function startRemoving(token, page) {
     let scrollCount = 0;
     while (scrollCount < 100) { // Limit scrolling to prevent infinite loops
       const sess = sessions.get(token);
-      if (!sess || !sess.active) break;
+      if (!sess || !sess.active) {
+        console.log(`[collecting] Session inactive for token:${token.slice(0,8)}`);
+        break;
+      }
 
       if (await hasCaptcha(page)) {
         const shot = await page.screenshot({ type: "jpeg", quality: 70 });
         emit(token, "qr_frame", shot.toString("base64"));
         emit(token, "captcha_detected", true);
         emit(token, "error", "Security check appeared. Wait a few minutes then try again.");
+        await cleanup(token);
         break;
       }
 
@@ -424,29 +483,42 @@ async function startRemoving(token, page) {
       scrollCount++;
     }
 
-    emit(token, "status", { step: "removing", msg: `🗑️ Removing ${videoUrls.size} reposts...` });
+    emit(token, "status", { step: "removing", msg: `🗣️ Removing ${videoUrls.size} reposts...` });
 
     for (const fullUrl of videoUrls) {
       const sess = sessions.get(token);
-      if (!sess || !sess.active) break;
+      if (!sess || !sess.active) {
+        console.log(`[removing] Session inactive for token:${token.slice(0,8)}`);
+        break;
+      }
 
       try {
         await page.goto(fullUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
         await page.waitForTimeout(1500);
 
-        if (await hasCaptcha(page)) { failed++; await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); await page.waitForTimeout(1000); continue; }
+        if (await hasCaptcha(page)) { 
+          failed++; 
+          try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
+          await page.waitForTimeout(1000); 
+          continue; 
+        }
 
         const shareBtn = await findEl(page, "shareBtn", 5000);
-        if (!shareBtn) { failed++; await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); await page.waitForTimeout(1000); continue; }
+        if (!shareBtn) { 
+          failed++; 
+          try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
+          await page.waitForTimeout(1000); 
+          continue; 
+        }
 
         await shareBtn.click();
         await page.waitForTimeout(1200);
 
         const removeBtn = await findEl(page, "removeRepostBtn", 5000);
         if (!removeBtn) {
-          await page.keyboard.press("Escape");
+          try { await page.keyboard.press("Escape"); } catch (_) {}
           failed++;
-          await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+          try { await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch (_) {}
           await page.waitForTimeout(1000);
           continue;
         }
