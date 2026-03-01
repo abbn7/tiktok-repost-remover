@@ -484,13 +484,13 @@ async function startRemoving(token, page) {
 
     emit(token, "status", { step: "done", msg });
     emit(token, "complete", { removed, failed });
+    await cleanup(token);
 
   } catch (err) {
     console.error("Removal error:", err.message);
     emit(token, "error", "Error: " + err.message);
-  } finally {
     await cleanup(token);
-  }
+
 }
 
 // ══════════════════════════════════════════════════════════════════
